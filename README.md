@@ -236,6 +236,12 @@ Streamlit informa la dirección local, normalmente
   dos CSV estimados, filtros por tipo/año/género/valoración y descarga de las
   fuentes completas o de la selección. No interviene en el análisis principal.
 
+## Documentación de visualizaciones
+
+La [justificación de las representaciones gráficas y evaluación crítica](docs/justificacion_representaciones_graficas.md)
+describe las decisiones de diseño, sus límites y mejoras recomendadas. Las
+capturas completas de las siete secciones están en `images/dashboard/`.
+
 Los filtros compartidos incluyen tipo de contenido, año de estreno, género y
 calificación. La interfaz está en español y respeta el tema claro u oscuro
 configurado en Streamlit. Los nombres originales de variables y títulos se
