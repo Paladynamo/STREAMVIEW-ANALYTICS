@@ -1,4 +1,8 @@
-.venv/
+/.venv/
 __pycache__/
 *.pyc
 .streamlit/
+/data/research_tmdb_enrichment.csv
+/data/research_tmdb_enrichment.partial.csv
+/data/research_wikidata_enrichment.csv
+/data/research_wikidata_enrichment.partial.csv
