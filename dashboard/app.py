@@ -740,6 +740,104 @@ def render_popularity(catalog: pd.DataFrame) -> None:
     st.dataframe(best_rated, hide_index=True, width="stretch")
 
 
+
+    st.markdown("#### Ranking ajustado por volumen de votos")
+    st.caption(
+        "La valoración ajustada combina el promedio de cada título con el promedio global "
+        "y pondera según la cantidad de votos. Es un criterio estadístico exploratorio, "
+        "no una métrica oficial ni una medida de audiencia."
+    )
+    vote_floor = st.slider(
+        "Mínimo de votos externos para el ranking",
+        min_value=0,
+        max_value=1000,
+        value=100,
+        step=25,
+        key="rating_vote_floor",
+    )
+    valid_scores = catalog.dropna(subset=["vote_average", "vote_count"]).copy()
+    valid_scores = valid_scores.loc[valid_scores["vote_count"] >= vote_floor]
+    if not valid_scores.empty:
+        global_mean = float(catalog["vote_average"].mean())
+        prior_weight = float(catalog["vote_count"].median())
+        if prior_weight <= 0:
+            prior_weight = 1.0
+        valid_scores["valoracion_ajustada"] = (
+            (valid_scores["vote_count"] / (valid_scores["vote_count"] + prior_weight))
+            * valid_scores["vote_average"]
+            + (prior_weight / (valid_scores["vote_count"] + prior_weight))
+            * global_mean
+        )
+        ranking = valid_scores.nlargest(15, "valoracion_ajustada").sort_values(
+            "valoracion_ajustada"
+        )
+        ranking_figure = px.bar(
+            ranking,
+            x="valoracion_ajustada",
+            y="title",
+            color="type_label",
+            orientation="h",
+            hover_data={"vote_average": ":.2f", "vote_count": True},
+            title="15 títulos con mayor valoración ajustada",
+            labels={
+                "valoracion_ajustada": "Valoración ajustada (0–10)",
+                "title": "Título",
+                "type_label": "Tipo",
+                "vote_average": "Promedio original",
+                "vote_count": "Votos externos",
+            },
+            color_discrete_map=TYPE_COLORS,
+        )
+        st.plotly_chart(
+            update_figure(ranking_figure, "Valoración ajustada (0–10)", ""),
+            width="stretch",
+            config=PLOT_CONFIG,
+        )
+        st.caption(
+            f"Referencia global: {format_decimal(global_mean, 2)}/10. "
+            f"Peso previo: mediana de votos = {format_count(prior_weight)}. "
+            f"Registros que cumplen el filtro: {format_count(len(valid_scores))}."
+        )
+        st.dataframe(
+            ranking[["title", "type_label", "vote_average", "vote_count", "valoracion_ajustada"]]
+            .rename(columns={
+                "title": "Título",
+                "type_label": "Tipo",
+                "vote_average": "Valoración original",
+                "vote_count": "Votos externos",
+                "valoracion_ajustada": "Valoración ajustada",
+            }),
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.info("No hay títulos que cumplan el mínimo de votos seleccionado.")
+
+    st.markdown("#### Distribución de popularidad: escala original y lectura logarítmica")
+    popularity_values = catalog.loc[catalog["popularity"] > 0].copy()
+    if not popularity_values.empty:
+        distribution = px.histogram(
+            popularity_values,
+            x="popularity",
+            color="type_label",
+            nbins=45,
+            barmode="overlay",
+            opacity=0.72,
+            log_x=True,
+            title="Distribución de popularidad (eje X logarítmico)",
+            labels={"popularity": "Índice TMDB (escala logarítmica)", "type_label": "Tipo"},
+            color_discrete_map=TYPE_COLORS,
+        )
+        st.plotly_chart(
+            update_figure(distribution, "Índice TMDB · escala logarítmica", "Cantidad de registros"),
+            width="stretch",
+            config=PLOT_CONFIG,
+        )
+        st.caption(
+            "La escala logarítmica permite observar la concentración principal sin "
+            "ocultar por completo los valores extremos; el hover conserva el valor original."
+        )
+
 def render_finance(catalog: pd.DataFrame) -> None:
     st.subheader("Finanzas de películas")
     st.caption(
@@ -1067,49 +1165,41 @@ def render_quality(catalog: pd.DataFrame) -> None:
     )
 
 
+
 def render_external_research() -> None:
-    st.subheader("Investigación complementaria (en construcción)")
+    st.subheader("Investigación complementaria")
+    st.caption(
+        "Capa exploratoria independiente: estos archivos no reemplazan los CSV oficiales "
+        "ni modifican los KPI del catálogo principal."
+    )
     st.warning(
-        "Esta sección usa exclusivamente los dos CSV complementarios preparados "
-        "para la investigación; no modifica ni alimenta los indicadores oficiales "
-        "del catálogo. Es material provisional, no verificado al 100 %, y requiere "
-        "validación antes de citarlo como dato factual."
+        "Las duraciones, proxies e indicadores financieros de esta sección son estimaciones "
+        "no verificadas. No representan reproducciones, engagement real, retención ni churn."
     )
-    st.markdown(
-        """
-        **Archivos utilizados:** `data/research_inputs/netflix_movies_completed_estimates.csv`
-        y `data/research_inputs/netflix_tv_shows_completed_estimates.csv`. Se mantienen
-        separados de los archivos oficiales y se anexan únicamente dentro de esta vista
-        investigativa. Los CSV incluyen sus propios campos de fuente, método y estado.
-
-        **Duraciones:** todas las filas de ambos archivos están marcadas como estimadas
-        y no verificadas externamente. Para películas, la cifra pretende aproximar la
-        duración total; para series, es una estimación por episodio. Las temporadas,
-        cantidad de episodios y duración total de las series no están informadas.
-
-        **Interacción y clientes:** `engagement_proxy_score` es un proxy interno basado
-        en percentiles de popularidad y votos; no representa reproducciones, usuarios
-        únicos ni engagement real de Netflix. Los archivos indican que churn, retención
-        y clientes activos no son calculables con las fuentes disponibles. Los campos
-        financieros estimados de películas también requieren verificación; aunque algunos
-        nombres de columna declaran USD, esa moneda no se ha validado.
-        """
-    )
-
     try:
         research = load_research_catalog()
     except (FileNotFoundError, ValueError, pd.errors.ParserError) as error:
         st.error(f"No se pudo cargar la investigación complementaria: {error}")
         return
 
-    st.caption(
-        f"Archivos locales preparados para esta investigación: "
-        f"{format_count(len(research))} registros en total. "
-        "No se emparejan ni reemplazan registros del análisis principal."
-    )
+    with st.expander("Procedencia, alcance y advertencias", expanded=False):
+        st.markdown(
+            """
+            - **Películas:** `netflix_movies_completed_estimates.csv`.
+            - **Series:** `netflix_tv_shows_completed_estimates.csv`.
+            - Las duraciones se marcaron como estimadas y no verificadas.
+            - En películas, la estimación intenta representar minutos de la obra completa.
+            - En series, representa minutos por episodio; no se conoce duración total por temporada.
+            - `engagement_proxy_score` es un proxy interno basado en metadatos y votos externos.
+            - Los campos financieros estimados requieren comprobación independiente; la moneda declarada
+              en un nombre de columna no equivale a validación de la divisa.
+            - Se conserva archivo y fila de origen para facilitar trazabilidad.
+            """
+        )
+
     with st.sidebar:
         st.header("Filtros de investigación")
-        st.caption("La valoración es numérica (0–10), no una clasificación por edad.")
+        st.caption("Independientes de los filtros del catálogo principal.")
         content_types = sorted(research["type"].dropna().unique())
         selected_types = st.multiselect(
             "Tipo de contenido",
@@ -1120,36 +1210,30 @@ def render_external_research() -> None:
         )
         years = research["release_year"].dropna()
         if years.empty:
-            st.error("Los CSV complementarios no contienen años de estreno válidos.")
+            st.error("Los CSV complementarios no contienen años válidos.")
             return
         year_min, year_max = int(years.min()), int(years.max())
         selected_years = st.slider(
-            "Año de estreno",
-            min_value=year_min,
-            max_value=year_max,
-            value=(year_min, year_max),
+            "Año de estreno", year_min, year_max, (year_min, year_max),
             key="research_years",
         )
         scores = research["rating"].dropna()
         if scores.empty:
-            st.error("Los CSV complementarios no contienen calificaciones válidas.")
+            st.error("Los CSV complementarios no contienen valoraciones válidas.")
             return
         selected_scores = st.slider(
-            "Valoración disponible (0–10)",
-            min_value=0.0,
-            max_value=10.0,
-            value=(max(0.0, float(scores.min())), min(10.0, float(scores.max()))),
+            "Valoración (0–10)",
+            0.0, 10.0,
+            (max(0.0, float(scores.min())), min(10.0, float(scores.max()))),
             step=0.1,
             key="research_ratings",
         )
-        available_genres = sorted(
-            {
-                display_genre(value.strip())
-                for raw in research["genres"].astype(str)
-                for value in raw.split(",")
-                if value.strip() and value.strip().casefold() != "unknown"
-            }
-        )
+        available_genres = sorted({
+            display_genre(value.strip())
+            for raw in research["genres"].astype(str)
+            for value in raw.split(",")
+            if value.strip() and value.strip().casefold() != "unknown"
+        })
         selected_genres = st.multiselect(
             "Género", available_genres, default=[], key="research_genres"
         )
@@ -1173,9 +1257,7 @@ def render_external_research() -> None:
         return
 
     estimate_flags = (
-        selected["runtime_is_estimate"]
-        .astype("string")
-        .str.casefold()
+        selected["runtime_is_estimate"].astype("string").str.casefold()
         .isin({"true", "1", "yes", "sí"})
     )
     runtime_count = int(
@@ -1183,156 +1265,203 @@ def render_external_research() -> None:
     )
     proxy_count = int(selected["engagement_proxy_score"].notna().sum())
     kpis = st.columns(3)
-    kpis[0].metric("Registros en la selección", format_count(len(selected)))
+    kpis[0].metric("Registros seleccionados", format_count(len(selected)))
     kpis[1].metric("Duraciones estimadas", format_count(runtime_count))
-    kpis[2].metric("Registros con proxy interno", format_count(proxy_count))
+    kpis[2].metric("Registros con proxy", format_count(proxy_count))
     st.caption(
-        "La duración estimada de una película y la duración estimada por episodio "
-        "son conceptos distintos; no deben compararse como si tuvieran el mismo alcance."
+        "Las duraciones de películas y series tienen distinto alcance y no se deben comparar "
+        "como si ambas representaran la duración total del contenido."
     )
 
-    genre_rows = selected[["genres", "engagement_proxy_score"]].copy()
-    genre_rows["Género"] = genre_rows["genres"].astype(str).str.split(",")
-    genre_rows = genre_rows.explode("Género")
-    genre_rows["Género"] = genre_rows["Género"].str.strip().map(display_genre)
-    genre_rows = genre_rows.loc[
-        genre_rows["Género"].ne("No informado")
-        & genre_rows["engagement_proxy_score"].notna()
-    ]
-    genre_summary = (
-        genre_rows.groupby("Género", as_index=False)
-        .agg(
-            proxy_promedio=("engagement_proxy_score", "mean"),
-            registros=("engagement_proxy_score", "size"),
-        )
-        .sort_values("registros", ascending=False)
-        .head(15)
+    research_view = st.radio(
+        "Explorar análisis",
+        ["Proxy comparativo", "Duraciones estimadas", "Finanzas estimadas", "Registros y trazabilidad"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="research_view",
     )
-    if not genre_summary.empty:
+
+    if research_view == "Proxy comparativo":
         st.markdown("#### Proxy comparativo por género")
         st.caption(
             "Promedio del score interno incluido en los CSV. Es una señal exploratoria "
             "basada en popularidad y votos externos; no mide actividad de clientes."
         )
-        figure = px.bar(
-            genre_summary.sort_values("proxy_promedio"),
-            x="proxy_promedio",
-            y="Género",
-            orientation="h",
-            color="proxy_promedio",
-            color_continuous_scale="Blues",
-            hover_data={"registros": True, "proxy_promedio": ":.2f"},
-            labels={"proxy_promedio": "Proxy promedio", "Género": "Género"},
-        )
-        st.plotly_chart(
-            update_figure(figure, "Proxy promedio (no es engagement real)", ""),
-            width="stretch",
-            config=PLOT_CONFIG,
-        )
-
-    visible_columns = [
-        column
-        for column in [
-            "type_label",
-            "title",
-            "show_id",
-            "release_year",
-            "_genres_es",
-            "duration",
-            "investigation_runtime_minutes",
-            "investigation_runtime_scope",
-            "runtime_verification_status",
-            "runtime_source",
-            "runtime_estimation_method",
-            "engagement_proxy_score",
-            "engagement_proxy_method",
-            "customer_metrics_status",
-            "estimated_gross_profit_usd",
-            "estimated_roi_pct",
-            "imdb_search_url",
-            "tmdb_record_url",
-            "_research_source_file",
-            "_research_source_row",
+        genre_rows = selected[["genres", "engagement_proxy_score"]].copy()
+        genre_rows["Género"] = genre_rows["genres"].astype(str).str.split(",")
+        genre_rows = genre_rows.explode("Género")
+        genre_rows["Género"] = genre_rows["Género"].str.strip().map(display_genre)
+        genre_rows = genre_rows.loc[
+            genre_rows["Género"].ne("No informado")
+            & genre_rows["engagement_proxy_score"].notna()
         ]
-        if column in selected.columns
-    ]
-    visible_labels = {
-        "type_label": "Tipo",
-        "title": "Título",
-        "show_id": "ID del archivo complementario",
-        "release_year": "Año de estreno",
-        "_genres_es": "Género(s)",
-        "duration": "Duración declarada en el CSV",
-        "investigation_runtime_minutes": "Duración estimada (minutos)",
-        "investigation_runtime_scope": "Alcance de la estimación",
-        "runtime_verification_status": "Estado de verificación de duración",
-        "runtime_source": "Método/fuente declarada de duración",
-        "runtime_estimation_method": "Regla de estimación declarada",
-        "engagement_proxy_score": "Proxy interno (no engagement real)",
-        "engagement_proxy_method": "Método del proxy",
-        "customer_metrics_status": "Estado de métricas de clientes",
-        "estimated_gross_profit_usd": "Utilidad bruta estimada (USD declarado)",
-        "estimated_roi_pct": "ROI estimado (%)",
-        "imdb_search_url": "Búsqueda IMDb",
-        "tmdb_record_url": "Ficha TMDB",
-        "_research_source_file": "Archivo complementario",
-        "_research_source_row": "Fila de origen",
-    }
-    st.markdown("#### Registros complementarios")
-    st.dataframe(
-        selected[visible_columns].rename(columns=visible_labels).head(200),
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "Búsqueda IMDb": st.column_config.LinkColumn(
-                "Búsqueda IMDb", display_text="Abrir búsqueda"
-            ),
-            "Ficha TMDB": st.column_config.LinkColumn(
-                "Ficha TMDB", display_text="Abrir ficha"
-            ),
-        },
-    )
-    if len(selected) > 200:
-        st.caption(
-            "Vista previa limitada a 200 filas. Las descargas incluyen todos los "
-            "registros filtrados y conservan las columnas originales del archivo."
+        genre_summary = (
+            genre_rows.groupby("Género", as_index=False)
+            .agg(
+                proxy_promedio=("engagement_proxy_score", "mean"),
+                registros=("engagement_proxy_score", "size"),
+            )
+            .sort_values("registros", ascending=False)
+            .head(15)
         )
+        if not genre_summary.empty:
+            figure = px.bar(
+                genre_summary.sort_values("proxy_promedio"),
+                x="proxy_promedio", y="Género", orientation="h",
+                color="proxy_promedio", color_continuous_scale="Blues",
+                hover_data={"registros": True, "proxy_promedio": ":.2f"},
+                labels={"proxy_promedio": "Proxy promedio", "Género": "Género"},
+                title="Proxy promedio por género",
+            )
+            st.plotly_chart(
+                update_figure(figure, "Proxy promedio (no es engagement real)", ""),
+                width="stretch", config=PLOT_CONFIG,
+            )
+        else:
+            st.info("No hay valores de proxy disponibles para los filtros seleccionados.")
 
-    st.markdown("#### Descargas de esta investigación")
+    elif research_view == "Duraciones estimadas":
+        st.markdown("#### Duración estimada según tipo de contenido")
+        duration_data = selected.dropna(subset=["investigation_runtime_minutes"]).copy()
+        if duration_data.empty:
+            st.info("No hay duraciones estimadas disponibles en esta selección.")
+        else:
+            movie_data = duration_data.loc[duration_data["type"].eq("Movie")]
+            series_data = duration_data.loc[duration_data["type"].eq("TV Show")]
+            left, right = st.columns(2)
+            if not movie_data.empty:
+                left.metric("Mediana estimada de películas", f"{format_decimal(movie_data['investigation_runtime_minutes'].median(), 0)} min")
+                movie_fig = px.histogram(
+                    movie_data, x="investigation_runtime_minutes", nbins=30,
+                    title="Películas · minutos estimados",
+                    labels={"investigation_runtime_minutes": "Minutos estimados"},
+                )
+                left.plotly_chart(update_figure(movie_fig, "Minutos (estimados)", "Títulos"), width="stretch", config=PLOT_CONFIG)
+            if not series_data.empty:
+                right.metric("Mediana estimada por episodio", f"{format_decimal(series_data['investigation_runtime_minutes'].median(), 0)} min")
+                series_fig = px.histogram(
+                    series_data, x="investigation_runtime_minutes", nbins=30,
+                    title="Series · minutos por episodio estimados",
+                    labels={"investigation_runtime_minutes": "Minutos estimados por episodio"},
+                )
+                right.plotly_chart(update_figure(series_fig, "Minutos por episodio (estimados)", "Registros"), width="stretch", config=PLOT_CONFIG)
+            st.warning(
+                "Estas distribuciones describen estimaciones. No permiten afirmar duración "
+                "verificada ni duración total de una serie."
+            )
+
+    elif research_view == "Finanzas estimadas":
+        st.markdown("#### Exploración financiera complementaria")
+        st.caption("Solo se muestran campos presentes en los CSV complementarios; son estimaciones, no resultados contables.")
+        finance_cols = [c for c in ["estimated_gross_profit_usd", "estimated_roi_pct"] if c in selected.columns]
+        if not finance_cols:
+            st.info("Los archivos no contienen columnas financieras estimadas disponibles.")
+        else:
+            financial_est = selected.loc[selected["type"].eq("Movie")].copy()
+            if "estimated_roi_pct" in financial_est.columns:
+                financial_est["estimated_roi_pct"] = pd.to_numeric(financial_est["estimated_roi_pct"], errors="coerce")
+                valid_finance = financial_est.dropna(subset=["estimated_roi_pct"])
+                if not valid_finance.empty:
+                    left, right = st.columns(2)
+                    left.metric("Películas con ROI estimado informado", format_count(len(valid_finance)))
+                    left.metric("Mediana de ROI estimado", f"{format_decimal(valid_finance['estimated_roi_pct'].median(), 1)}%")
+                    roi_plot = px.histogram(
+                        valid_finance, x="estimated_roi_pct", nbins=35,
+                        title="Distribución de ROI estimado",
+                        labels={"estimated_roi_pct": "ROI estimado (%)"},
+                    )
+                    right.plotly_chart(update_figure(roi_plot, "ROI estimado (%)", "Películas"), width="stretch", config=PLOT_CONFIG)
+                else:
+                    st.info("No hay valores de ROI estimado para los filtros seleccionados.")
+            if "estimated_gross_profit_usd" in financial_est.columns:
+                profit = pd.to_numeric(financial_est["estimated_gross_profit_usd"], errors="coerce").dropna()
+                if not profit.empty:
+                    st.metric("Mediana de utilidad bruta estimada (moneda declarada USD)", format_source_amount(float(profit.median())))
+            st.warning(
+                "No presentar estos campos como ROI contable, utilidad neta ni USD verificados. "
+                "No sustituyen los datos financieros oficiales del análisis principal."
+            )
+
+    else:
+        st.markdown("#### Registros complementarios y trazabilidad")
+        visible_columns = [
+            column for column in [
+                "type_label", "title", "show_id", "release_year", "_genres_es",
+                "investigation_runtime_minutes", "investigation_runtime_scope",
+                "runtime_verification_status", "runtime_source",
+                "runtime_estimation_method", "engagement_proxy_score",
+                "engagement_proxy_method", "customer_metrics_status",
+                "estimated_gross_profit_usd", "estimated_roi_pct",
+                "imdb_search_url", "tmdb_record_url",
+                "_research_source_file", "_research_source_row",
+            ] if column in selected.columns
+        ]
+        visible_labels = {
+            "type_label": "Tipo", "title": "Título",
+            "show_id": "ID del archivo complementario",
+            "release_year": "Año de estreno", "_genres_es": "Género(s)",
+            "investigation_runtime_minutes": "Duración estimada (minutos)",
+            "investigation_runtime_scope": "Alcance de la estimación",
+            "runtime_verification_status": "Estado de verificación",
+            "runtime_source": "Método/fuente declarada",
+            "runtime_estimation_method": "Regla de estimación",
+            "engagement_proxy_score": "Proxy interno (no engagement real)",
+            "engagement_proxy_method": "Método del proxy",
+            "customer_metrics_status": "Estado de métricas de clientes",
+            "estimated_gross_profit_usd": "Utilidad bruta estimada (USD declarado)",
+            "estimated_roi_pct": "ROI estimado (%)",
+            "imdb_search_url": "Búsqueda IMDb", "tmdb_record_url": "Ficha TMDB",
+            "_research_source_file": "Archivo de origen",
+            "_research_source_row": "Fila de origen",
+        }
+        st.dataframe(
+            selected[visible_columns].rename(columns=visible_labels).head(200),
+            hide_index=True, width="stretch",
+            column_config={
+                "Búsqueda IMDb": st.column_config.LinkColumn("Búsqueda IMDb", display_text="Abrir búsqueda"),
+                "Ficha TMDB": st.column_config.LinkColumn("Ficha TMDB", display_text="Abrir ficha"),
+            },
+        )
+        st.caption("Vista previa limitada a 200 filas; la descarga conserva todos los registros filtrados.")
+
+    st.markdown("#### Exportar datos")
     downloads = st.columns(3)
     downloads[0].download_button(
-        "Películas estimadas (CSV)",
-        data=research.loc[research["type"].eq("Movie")]
-        .to_csv(index=False)
-        .encode("utf-8-sig"),
-        file_name="netflix_movies_completed_estimates.csv",
-        mime="text/csv",
-        help="Descarga las filas de películas con procedencia y columnas complementarias de trazabilidad.",
+        "CSV de películas estimadas",
+        data=research.loc[research["type"].eq("Movie")].to_csv(index=False).encode("utf-8-sig"),
+        file_name="netflix_movies_completed_estimates.csv", mime="text/csv",
     )
     downloads[1].download_button(
-        "Series estimadas (CSV)",
-        data=research.loc[research["type"].eq("TV Show")]
-        .to_csv(index=False)
-        .encode("utf-8-sig"),
-        file_name="netflix_tv_shows_completed_estimates.csv",
-        mime="text/csv",
-        help="Descarga las filas de series con procedencia y columnas complementarias de trazabilidad.",
+        "CSV de series estimadas",
+        data=research.loc[research["type"].eq("TV Show")].to_csv(index=False).encode("utf-8-sig"),
+        file_name="netflix_tv_shows_completed_estimates.csv", mime="text/csv",
     )
     downloads[2].download_button(
-        "Selección filtrada (CSV)",
-        data=selected.drop(columns=["_genres_es"], errors="ignore")
-        .to_csv(index=False)
-        .encode("utf-8-sig"),
-        file_name="streamview_investigacion_complementaria_filtrada.csv",
-        mime="text/csv",
-        help="Exporta la selección actual con procedencia, métodos y estados de verificación.",
+        "Selección filtrada",
+        data=selected.drop(columns=["_genres_es"], errors="ignore").to_csv(index=False).encode("utf-8-sig"),
+        file_name="streamview_investigacion_filtrada.csv", mime="text/csv",
     )
+
 
 
 def main() -> None:
     st.title("StreamView Analytics")
     st.caption(
-        "Analítica visual para explorar el catálogo audiovisual · películas y series hasta 2025"
+        "Analítica visual del catálogo audiovisual · películas y series hasta 2025"
+    )
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1600px;}
+        [data-testid="stMetric"] {padding: .55rem .7rem; border-radius: .65rem; background: rgba(128,128,128,.07);}
+        [data-testid="stTabs"] button {font-size: .92rem;}
+        @media (max-width: 900px) {
+            .block-container {padding-left: 1rem; padding-right: 1rem;}
+            [data-testid="stMetric"] {padding: .4rem;}
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
     try:
@@ -1341,41 +1470,44 @@ def main() -> None:
         st.error(str(error))
         st.stop()
 
-    with st.sidebar:
-        st.title("Navegación")
-        page = st.radio(
-            "Ir a sección",
-            [
-                "Resumen ejecutivo",
-                "Catálogo y tendencias",
-                "Popularidad y valoración",
-                "Finanzas de películas",
-                "Contexto y reglas",
-                "Fuentes y calidad",
-                "Investigación complementaria (en construcción)",
-            ],
-            label_visibility="collapsed",
-        )
-        st.divider()
+    pages = [
+        "Resumen ejecutivo",
+        "Catálogo y tendencias",
+        "Popularidad y valoración",
+        "Finanzas de películas",
+        "Contexto y reglas",
+        "Fuentes y calidad",
+        "Investigación complementaria",
+    ]
+    page = st.radio(
+        "Navegación por módulos",
+        pages,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="main_navigation",
+    )
+    st.divider()
 
-    if page == "Investigación complementaria (en construcción)":
+    if page == "Investigación complementaria":
         render_external_research()
         return
 
+    with st.sidebar:
+        st.title("Filtros del catálogo")
+        st.caption("Se aplican a los seis módulos principales.")
     selected = apply_filters(catalog)
     if selected.empty:
         st.warning("No hay títulos que coincidan con los filtros seleccionados.")
-        st.info("Amplía el rango de años o calificación, o cambia género y tipo de contenido.")
+        st.info("Amplía el rango de años o valoración, o modifica tipo y género.")
         st.stop()
 
     valid_years = selected["release_year"].dropna()
     year_range = (
         f"{int(valid_years.min())}–{int(valid_years.max())}"
-        if not valid_years.empty
-        else "sin años informados"
+        if not valid_years.empty else "sin años informados"
     )
     st.caption(
-        f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} títulos"
+        f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} registros"
         f" · Años de estreno: {year_range}"
     )
     render_kpis(selected)
@@ -1391,7 +1523,7 @@ def main() -> None:
         render_finance(selected)
     elif page == "Contexto y reglas":
         render_business_context()
-    else:
+    elif page == "Fuentes y calidad":
         render_quality(catalog)
 
 

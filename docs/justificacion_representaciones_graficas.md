@@ -261,3 +261,30 @@ en evidencia de consumo, retención o churn. La prioridad para fortalecer las
 conclusiones es validar el origen y la estructura temporal de los datos y
 obtener fuentes de actividad de clientes; las cifras investigativas deben
 continuar separadas y marcadas como provisionales.
+
+
+## Evolución de la versión definitiva
+
+La versión final conserva las siete áreas funcionales y cambia la navegación de un menú vertical a un selector horizontal de módulos. La selección activa muestra solo la sección correspondiente, lo que reduce la necesidad de recorrer una página extensa para cambiar de tema. Los filtros principales siguen centralizados en la barra lateral; la investigación complementaria mantiene filtros independientes para no mezclar universos ni fuentes.
+
+### Nuevas representaciones y análisis complementarios
+
+- **Valoración ajustada por volumen de votos:** se incorpora un ranking exploratorio que pondera el promedio individual de cada título y el promedio global. La cantidad de votos determina el peso relativo de cada componente. Se permite configurar el mínimo de votos, se informa el promedio global y la mediana de votos usada como peso previo. Su objetivo es reducir la exposición de títulos con muy pocas evaluaciones, no estimar audiencia ni sustituir un ranking oficial.
+- **Distribución logarítmica de popularidad:** se agrega un histograma con eje horizontal logarítmico para hacer visible la concentración principal y los valores extremos sin descartar observaciones. La popularidad continúa identificada como índice externo.
+- **Duraciones estimadas separadas por tipo:** se visualizan distribuciones por separado para minutos totales estimados de películas y minutos estimados por episodio de series. No se comparan como una misma magnitud.
+- **Finanzas complementarias:** cuando existen las columnas correspondientes, se exploran las estimaciones de ROI y utilidad bruta de películas. Se advierte que son provisionales y que los nombres de columnas que declaran USD no verifican la moneda ni convierten la cifra en resultado contable.
+- **Trazabilidad y exportación:** se conservan archivo y fila de origen, métodos, estados de verificación y enlaces declarados. La vista permite exportar los archivos completos y la selección filtrada.
+
+### Cambios de experiencia de usuario
+
+- Navegación horizontal por módulos en lugar de un menú lateral de página.
+- Filtros del catálogo agrupados en la barra lateral y compartidos por las seis secciones oficiales.
+- Filtros separados para la investigación complementaria.
+- Controles de investigación organizados por vista analítica: proxy, duraciones, finanzas y trazabilidad.
+- Ajustes de espaciado, ancho máximo, tarjetas KPI y adaptación del contenido a pantallas de menor tamaño.
+
+### Evaluación crítica de la ampliación
+
+La mejora más importante es de acceso y exploración: se reduce la carga de navegación vertical y se ofrece una lectura más modular. El ranking ajustado agrega una comparación más prudente que el ordenamiento exclusivo por promedio, pero depende de la población filtrada y del peso previo elegido; por ello el dashboard declara sus parámetros y permite cambiar el mínimo de votos. Las nuevas vistas complementarias amplían la investigación sin contaminar los indicadores oficiales.
+
+Persisten limitaciones estructurales: no hay datos de clientes ni eventos de reproducción, las duraciones son estimadas, los proxies se construyen desde metadatos externos y las finanzas complementarias requieren validación. Por ello la solución apoya decisiones de composición, evaluación y exploración del catálogo, pero no permite concluir churn, retención, consumo o engagement real.
