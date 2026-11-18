@@ -161,6 +161,8 @@ def load_source(path: Path, content_type: str) -> pd.DataFrame:
         raise FileNotFoundError(f"No se encontró el archivo requerido: {path}")
     source = pd.read_csv(path)
     source["type"] = content_type
+    source["_source_file"] = path.name
+    source["_source_row"] = range(2, len(source) + 2)
     return source
 
 
@@ -188,6 +190,13 @@ def load_catalog() -> pd.DataFrame:
     catalog["genres"] = catalog["genres"].fillna("Unknown")
     catalog["type_label"] = catalog["type"].map(TYPE_LABELS).fillna("No informado")
     catalog["_content_row"] = range(len(catalog))
+    catalog["_content_key"] = (
+        catalog["_source_file"].astype(str)
+        + "|"
+        + catalog["_source_row"].astype(str)
+        + "|"
+        + catalog["type"].astype(str)
+    )
     return catalog
 
 
@@ -337,13 +346,26 @@ def update_figure(figure: object, x_title: str | None = None, y_title: str | Non
     return figure
 
 
-def apply_filters(catalog: pd.DataFrame) -> pd.DataFrame:
+def apply_filters(catalog: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     with st.sidebar:
         st.header("Filtros del catálogo")
         types = sorted(catalog["type"].dropna().unique())
+        if st.button("Restablecer filtros", icon=":material/restart_alt:", key="reset_catalog_filters"):
+            st.session_state["catalog_types"] = types
+            st.session_state["catalog_years"] = (
+                int(catalog["release_year"].dropna().min()),
+                int(catalog["release_year"].dropna().max()),
+            )
+            st.session_state["catalog_genres"] = []
+            st.session_state["catalog_score"] = (
+                float(catalog["vote_average"].dropna().min()),
+                float(catalog["vote_average"].dropna().max()),
+            )
+            st.rerun()
         selected_types = st.multiselect(
             "Tipo de contenido", types, default=types,
             format_func=lambda value: TYPE_LABELS.get(value, value),
+            key="catalog_types",
         )
 
         valid_years = catalog["release_year"].dropna()
@@ -352,7 +374,8 @@ def apply_filters(catalog: pd.DataFrame) -> pd.DataFrame:
             st.stop()
         year_min, year_max = int(valid_years.min()), int(valid_years.max())
         selected_years = st.slider(
-            "Año de estreno", year_min, year_max, (year_min, year_max), step=1
+            "Año de estreno", year_min, year_max, (year_min, year_max), step=1,
+            key="catalog_years",
         )
 
         genres = sorted({
@@ -361,7 +384,7 @@ def apply_filters(catalog: pd.DataFrame) -> pd.DataFrame:
             for value in raw.split(",")
             if value.strip() and value.strip() != "Unknown"
         })
-        selected_genres = st.multiselect("Género", genres, default=[])
+        selected_genres = st.multiselect("Género", genres, default=[], key="catalog_genres")
 
         scores = catalog["vote_average"].dropna()
         if scores.empty:
@@ -373,7 +396,25 @@ def apply_filters(catalog: pd.DataFrame) -> pd.DataFrame:
             max_value=10.0,
             value=(max(0.0, float(scores.min())), min(10.0, float(scores.max()))),
             step=0.1,
+            key="catalog_score",
         )
+        st.divider()
+        compare_enabled = st.toggle(
+            "Comparar con otro periodo",
+            value=False,
+            key="catalog_compare_enabled",
+        )
+        comparison_years = None
+        if compare_enabled:
+            comparison_years = st.slider(
+                "Periodo de comparación",
+                year_min,
+                year_max,
+                (year_min, max(year_min, year_min + (year_max - year_min) // 2)),
+                step=1,
+                key="catalog_comparison_years",
+            )
+            st.caption("La comparación conserva tipo, género y calificación; cambia el año.")
 
     selected = catalog[
         catalog["type"].isin(selected_types)
@@ -387,12 +428,31 @@ def apply_filters(catalog: pd.DataFrame) -> pd.DataFrame:
         selected = selected[
             selected["_genres_es"].map(lambda values: bool(set(selected_genres) & values))
         ]
-    return selected
+    comparison = None
+    if compare_enabled and comparison_years is not None:
+        comparison = catalog[
+            catalog["type"].isin(selected_types)
+            & catalog["release_year"].between(*comparison_years)
+            & catalog["vote_average"].between(*selected_score)
+        ].copy()
+        if selected_genres:
+            comparison["_genres_es"] = comparison["genres"].map(
+                lambda raw: {display_genre(value.strip()) for value in str(raw).split(",")}
+            )
+            comparison = comparison[
+                comparison["_genres_es"].map(
+                    lambda values: bool(set(selected_genres) & values)
+                )
+            ].copy()
+    return selected, comparison
 
 
 def render_kpis(catalog: pd.DataFrame) -> None:
     score = catalog["vote_average"].mean()
     popularity = catalog["popularity"].mean()
+    coverage_score = catalog["vote_average"].notna().mean()
+    popularity_score = catalog["popularity"].notna().mean()
+    country_score = catalog["country"].notna().mean()
     columns = st.columns(3, gap="medium")
     indicators = [
         ("Títulos seleccionados", format_count(len(catalog)), "Cantidad de títulos según los filtros activos."),
@@ -402,9 +462,15 @@ def render_kpis(catalog: pd.DataFrame) -> None:
     for column, (label, value, help_text) in zip(columns, indicators):
         with column:
             st.metric(label, value, help=help_text, border=True)
+    st.caption(
+        "Cobertura de esta selección · "
+        f"Calificación: {format_decimal(coverage_score * 100, 1)}% | "
+        f"Popularidad: {format_decimal(popularity_score * 100, 1)}% | "
+        f"País informado: {format_decimal(country_score * 100, 1)}%"
+    )
 
 
-def render_overview(catalog: pd.DataFrame) -> None:
+def render_overview(catalog: pd.DataFrame, comparison: pd.DataFrame | None = None) -> None:
     st.subheader("Resumen ejecutivo")
     st.caption(
         "Audiencia: Directorio y Gerencia General. Orienta decisiones de catálogo y marketing; "
@@ -416,28 +482,42 @@ def render_overview(catalog: pd.DataFrame) -> None:
     languages = catalog["language"].nunique()
     genres = split_column(catalog, "genres")["valor"].nunique()
     st.markdown("#### Indicadores del catálogo")
-    extra = st.columns(5)
-    for column, label, value in zip(
-        extra,
-        ["Películas", "Series", "Países informados", "Idiomas", "Géneros"],
-        [movie_count, show_count, countries, languages, genres],
-    ):
-        column.metric(label, format_count(value))
+    with st.container(horizontal=True):
+        for label, value in [
+            ("Películas", movie_count),
+            ("Series", show_count),
+            ("Países informados", countries),
+            ("Idiomas", languages),
+            ("Géneros", genres),
+        ]:
+            st.metric(label, format_count(value), border=True)
 
-    yearly = (
-        catalog.groupby(["release_year", "type_label"], as_index=False)
-        .size()
-        .rename(columns={"release_year": "Año de estreno", "type_label": "Tipo de contenido", "size": "Títulos"})
+    genre_counts = split_column(catalog, "genres", GENRE_LABELS).groupby(
+        "etiqueta"
+    )["_content_row"].nunique().nlargest(10).sort_values().rename("Títulos").reset_index()
+    tab_trend, tab_mix, tab_genres, tab_story, tab_comparison = st.tabs(
+        ["Evolución", "Composición", "Géneros", "Lectura ejecutiva", "Comparación"]
     )
-    left, right = st.columns(2)
-    with left:
+    with tab_trend:
+        yearly = (
+            catalog.groupby(["release_year", "type_label"], as_index=False)
+            .size()
+            .rename(columns={"release_year": "Año de estreno", "type_label": "Tipo de contenido", "size": "Títulos"})
+        )
         figure = px.line(
             yearly, x="Año de estreno", y="Títulos", color="Tipo de contenido",
             markers=True, title="Estrenos por año", color_discrete_map=TYPE_COLORS,
         )
         update_figure(figure, "Año", "Cantidad de títulos")
         st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    with right:
+        release_counts = catalog["release_year"].value_counts()
+        if not release_counts.empty and release_counts.nunique() == 1:
+            st.warning(
+                f"En esta selección hay exactamente {int(release_counts.iloc[0]):,} "
+                "títulos por año de estreno. La distribución uniforme debe validarse "
+                "antes de interpretarla como tendencia de producción."
+            )
+    with tab_mix:
         type_counts = catalog["type_label"].value_counts().rename_axis(
             "Tipo de contenido"
         ).reset_index(name="Títulos")
@@ -448,43 +528,84 @@ def render_overview(catalog: pd.DataFrame) -> None:
         )
         update_figure(figure)
         st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-
-    genre_counts = split_column(catalog, "genres", GENRE_LABELS).groupby(
-        "etiqueta"
-    )["_content_row"].nunique().nlargest(10).sort_values().rename("Títulos").reset_index()
-    figure = px.bar(
-        genre_counts, x="Títulos", y="etiqueta", orientation="h",
-        title="Géneros con más títulos", color_discrete_sequence=["#188C9E"],
-        labels={"etiqueta": "Género"},
-    )
-    update_figure(figure, "Cantidad de títulos", "")
-    st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-
-    release_counts = catalog["release_year"].value_counts()
-    if not release_counts.empty and release_counts.nunique() == 1:
-        st.warning(
-            f"En esta selección hay exactamente {int(release_counts.iloc[0]):,} "
-            "títulos por año de estreno. La distribución uniforme debe validarse "
-            "antes de interpretarla como tendencia de producción."
+    with tab_genres:
+        figure = px.bar(
+            genre_counts, x="Títulos", y="etiqueta", orientation="h",
+            title="Géneros con más títulos", color_discrete_sequence=["#188C9E"],
+            labels={"etiqueta": "Género"},
         )
+        update_figure(figure, "Cantidad de títulos", "")
+        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+    with tab_story:
+        most_common_genre = genre_counts.iloc[-1]["etiqueta"] if not genre_counts.empty else "sin información"
+        type_rating = catalog.groupby("type_label")["vote_average"].mean().dropna()
+        highest_rated_type = type_rating.idxmax() if not type_rating.empty else "sin datos"
+        highest_score = type_rating.max() if not type_rating.empty else float("nan")
+        st.markdown(
+            f"""
+            **Qué ocurre:** {most_common_genre} concentra más títulos en la selección;
+            el promedio de calificación más alto corresponde a **{highest_rated_type}**
+            ({format_decimal(highest_score, 2)}/10).
 
-    st.markdown("### Narrativa y decisiones")
-    most_common_genre = genre_counts.iloc[-1]["etiqueta"] if not genre_counts.empty else "sin información"
-    type_rating = catalog.groupby("type_label")["vote_average"].mean().dropna()
-    highest_rated_type = type_rating.idxmax() if not type_rating.empty else "sin datos"
-    highest_score = type_rating.max() if not type_rating.empty else float("nan")
-    st.markdown(
-        f"""
-        **Qué ocurre:** {most_common_genre} concentra más títulos en la selección;
-        el promedio de calificación más alto corresponde a **{highest_rated_type}**
-        ({format_decimal(highest_score, 2)}/10).
+            **Qué hacer:** usar estos patrones para formular hipótesis de adquisición y
+            promoción. Antes de asignar presupuesto o tomar decisiones de retención,
+            contrastarlos con reproducciones, finalizaciones, búsquedas y cancelaciones
+            anonimizadas por cohorte, que no vienen en estas fuentes.
+            """
+        )
+    with tab_comparison:
+        if comparison is None or comparison.empty:
+            st.info("Activa «Comparar con otro periodo» en el sidebar para comparar dos selecciones.")
+        else:
+            def summary(frame: pd.DataFrame) -> dict[str, float]:
+                return {
+                    "Títulos": float(len(frame)),
+                    "Calificación": float(frame["vote_average"].mean()),
+                    "Popularidad": float(frame["popularity"].mean()),
+                }
 
-        **Qué hacer:** usar estos patrones para formular hipótesis de adquisición y
-        promoción. Antes de asignar presupuesto o tomar decisiones de retención,
-        contrastarlos con reproducciones, finalizaciones, búsquedas y cancelaciones
-        anonimizadas por cohorte, que no vienen en estas fuentes.
-        """
-    )
+            actual = summary(catalog)
+            baseline = summary(comparison)
+            comparison_table = pd.DataFrame(
+                [
+                    {
+                        "Indicador": "Títulos",
+                        "Selección actual": format_count(actual["Títulos"]),
+                        "Periodo comparado": format_count(baseline["Títulos"]),
+                        "Diferencia": format_count(actual["Títulos"] - baseline["Títulos"]),
+                    },
+                    {
+                        "Indicador": "Calificación promedio",
+                        "Selección actual": f"{format_decimal(actual['Calificación'], 2)}/10",
+                        "Periodo comparado": f"{format_decimal(baseline['Calificación'], 2)}/10",
+                        "Diferencia": f"{format_decimal(actual['Calificación'] - baseline['Calificación'], 2)}",
+                    },
+                    {
+                        "Indicador": "Popularidad promedio",
+                        "Selección actual": format_decimal(actual["Popularidad"], 1),
+                        "Periodo comparado": format_decimal(baseline["Popularidad"], 1),
+                        "Diferencia": format_decimal(actual["Popularidad"] - baseline["Popularidad"], 1),
+                    },
+                ]
+            )
+            st.dataframe(comparison_table, hide_index=True, width="stretch")
+            comparison_counts = pd.DataFrame(
+                [
+                    {"Selección": "Actual", "Títulos": actual["Títulos"]},
+                    {"Selección": "Comparada", "Títulos": baseline["Títulos"]},
+                ]
+            )
+            figure = px.bar(
+                comparison_counts,
+                x="Selección",
+                y="Títulos",
+                text="Títulos",
+                title="Comparación de tamaño",
+                color="Selección",
+                color_discrete_map={"Actual": "#188C9E", "Comparada": "#E4A92D"},
+            )
+            update_figure(figure, "", "Cantidad de títulos")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
 
 
 def render_catalog_analysis(catalog: pd.DataFrame) -> None:
@@ -492,6 +613,9 @@ def render_catalog_analysis(catalog: pd.DataFrame) -> None:
     st.caption(
         "Audiencia: Gerencia de Contenidos y Adquisición. Los países múltiples se "
         "desglosan al contar y un título puede contribuir a más de un país."
+    )
+    tab_market, tab_dates, tab_people = st.tabs(
+        ["Mercado y catálogo", "Incorporaciones", "Créditos"]
     )
     genre = split_column(catalog, "genres", GENRE_LABELS)
     genre_counts = (
@@ -508,79 +632,81 @@ def render_catalog_analysis(catalog: pd.DataFrame) -> None:
         languages.groupby("etiqueta")["_content_row"].nunique().nlargest(12)
         .sort_values().rename("Títulos").reset_index()
     )
-    first, second = st.columns(2)
-    with first:
-        figure = px.bar(
-            genre_counts, x="Títulos", y="etiqueta", orientation="h",
-            title="Títulos por género", color_discrete_sequence=["#188C9E"],
-            labels={"etiqueta": "Género"},
-        )
-        update_figure(figure, "Cantidad de títulos", "")
-        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    with second:
-        figure = px.bar(
-            country_counts, x="Títulos", y="etiqueta", orientation="h",
-            title="Títulos por país de producción", color_discrete_sequence=["#8A63C7"],
-            labels={"etiqueta": "País"},
-        )
-        update_figure(figure, "Cantidad de títulos", "")
-        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    figure = px.bar(
-        language_counts, x="Títulos", y="etiqueta", orientation="h",
-        title="Títulos por idioma principal", color_discrete_sequence=["#E4A92D"],
-        labels={"etiqueta": "Idioma"},
-    )
-    update_figure(figure, "Cantidad de títulos", "")
-    st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-
-    date_rows = catalog.dropna(subset=["date_added"]).copy()
-    if not date_rows.empty:
-        date_rows["Año de incorporación"] = date_rows["date_added"].dt.year
-        added_counts = (
-            date_rows.groupby(["Año de incorporación", "type_label"], as_index=False)
-            .size().rename(columns={"type_label": "Tipo de contenido", "size": "Títulos"})
-        )
-        figure = px.area(
-            added_counts, x="Año de incorporación", y="Títulos",
-            color="Tipo de contenido", title="Incorporaciones por año",
-            color_discrete_map=TYPE_COLORS,
-        )
-        update_figure(figure, "Año", "Cantidad de incorporaciones")
-        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-        counts_per_year = date_rows["Año de incorporación"].value_counts()
-        if counts_per_year.nunique() == 1:
-            st.warning(
-                f"La fuente contiene exactamente {int(counts_per_year.iloc[0]):,} "
-                "registros por año de incorporación en el periodo observado. "
-                "La distribución uniforme requiere validación con el responsable de "
-                "la fuente antes de interpretar la tendencia como crecimiento real."
-            )
-
-    st.markdown("#### Directores y actores con más apariciones")
-    people_cols = st.columns(2)
-    for column, source_col, label in [
-        (people_cols[0], "director", "Directores"),
-        (people_cols[1], "cast", "Actores"),
-    ]:
-        people = split_column(catalog, source_col)
-        people = people.loc[people["valor"].str.casefold() != "unknown"]
-        top_people = (
-            people.groupby("valor")["_content_row"].nunique().nlargest(10)
-            .sort_values().rename("Títulos").reset_index()
-        )
-        with column:
+    with tab_market:
+        first, second = st.columns(2)
+        with first:
             figure = px.bar(
-                top_people, x="Títulos", y="valor", orientation="h",
-                title=f"{label} con mayor presencia",
-                labels={"valor": label[:-1] if label.endswith("s") else label},
-                color_discrete_sequence=["#3685D3" if source_col == "director" else "#8A63C7"],
+                genre_counts, x="Títulos", y="etiqueta", orientation="h",
+                title="Títulos por género", color_discrete_sequence=["#188C9E"],
+                labels={"etiqueta": "Género"},
             )
             update_figure(figure, "Cantidad de títulos", "")
             st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    st.caption(
-        "Los conteos de personas son apariciones en listas de créditos, no medidas "
-        "de audiencia, calidad causal o valor de mercado."
-    )
+        with second:
+            figure = px.bar(
+                country_counts, x="Títulos", y="etiqueta", orientation="h",
+                title="Títulos por país de producción", color_discrete_sequence=["#8A63C7"],
+                labels={"etiqueta": "País"},
+            )
+            update_figure(figure, "Cantidad de títulos", "")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+        figure = px.bar(
+            language_counts, x="Títulos", y="etiqueta", orientation="h",
+            title="Títulos por idioma principal", color_discrete_sequence=["#E4A92D"],
+            labels={"etiqueta": "Idioma"},
+        )
+        update_figure(figure, "Cantidad de títulos", "")
+        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+    with tab_dates:
+        date_rows = catalog.dropna(subset=["date_added"]).copy()
+        if not date_rows.empty:
+            date_rows["Año de incorporación"] = date_rows["date_added"].dt.year
+            added_counts = (
+                date_rows.groupby(["Año de incorporación", "type_label"], as_index=False)
+                .size().rename(columns={"type_label": "Tipo de contenido", "size": "Títulos"})
+            )
+            figure = px.area(
+                added_counts, x="Año de incorporación", y="Títulos",
+                color="Tipo de contenido", title="Incorporaciones por año",
+                color_discrete_map=TYPE_COLORS,
+            )
+            update_figure(figure, "Año", "Cantidad de incorporaciones")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+            counts_per_year = date_rows["Año de incorporación"].value_counts()
+            if counts_per_year.nunique() == 1:
+                st.warning(
+                    f"La fuente contiene exactamente {int(counts_per_year.iloc[0]):,} "
+                    "registros por año de incorporación en el periodo observado. "
+                    "La distribución uniforme requiere validación con el responsable de "
+                    "la fuente antes de interpretar la tendencia como crecimiento real."
+                )
+        else:
+            st.info("No hay fechas de incorporación válidas en la selección.")
+    with tab_people:
+        people_cols = st.columns(2)
+        for column, source_col, label in [
+            (people_cols[0], "director", "Directores"),
+            (people_cols[1], "cast", "Actores"),
+        ]:
+            people = split_column(catalog, source_col)
+            people = people.loc[people["valor"].str.casefold() != "unknown"]
+            top_people = (
+                people.groupby("valor")["_content_row"].nunique().nlargest(10)
+                .sort_values().rename("Títulos").reset_index()
+            )
+            with column:
+                figure = px.bar(
+                    top_people, x="Títulos", y="valor", orientation="h",
+                    title=f"{label} con mayor presencia",
+                    labels={"valor": label[:-1] if label.endswith("s") else label},
+                    color_discrete_sequence=["#3685D3" if source_col == "director" else "#8A63C7"],
+                )
+                update_figure(figure, "Cantidad de títulos", "")
+                st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+        st.caption(
+            "Los conteos de personas son apariciones en listas de créditos, no medidas "
+            "de audiencia, calidad causal o valor de mercado."
+        )
 
 
 def render_popularity(catalog: pd.DataFrame) -> None:
@@ -589,89 +715,90 @@ def render_popularity(catalog: pd.DataFrame) -> None:
         "Audiencia: Marketing y Producto. El índice de popularidad, las calificaciones y los votos "
         "son metadatos externos y no describen reproducciones de StreamView."
     )
-
-    top_popular = catalog.nlargest(10, "popularity").sort_values("popularity")
-    top_popular = top_popular.assign(Tipo=top_popular["type_label"])
-    left, right = st.columns(2)
-    with left:
-        figure = px.bar(
-            top_popular, x="popularity", y="title", color="Tipo", orientation="h",
-            title="10 títulos con mayor popularidad",
-            labels={"popularity": "Índice TMDB", "title": "Título"},
-            color_discrete_map=TYPE_COLORS,
-        )
-        update_figure(figure, "Popularidad (índice TMDB)", "")
-        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    with right:
-        most_voted = catalog.nlargest(10, "vote_count").sort_values("vote_count")
-        figure = px.bar(
-            most_voted, x="vote_count", y="title", color="type_label", orientation="h",
-            title="10 títulos con más votos externos",
-            labels={"vote_count": "Cantidad de votos", "title": "Título", "type_label": "Tipo"},
-            color_discrete_map=TYPE_COLORS,
-        )
-        update_figure(figure, "Votos externos", "")
-        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-
-    valid_votes = catalog[catalog["vote_count"].fillna(0) > 0]
-    figure = px.scatter(
-        valid_votes, x="vote_average", y="popularity", size="vote_count",
-        color="type_label", hover_name="title", opacity=0.68,
-        title="Relación entre calificación, popularidad y votos",
-        labels={
-            "vote_average": "Calificación promedio (0–10)",
-            "popularity": "Popularidad TMDB",
-            "vote_count": "Votos externos",
-            "type_label": "Tipo de contenido",
-        },
-        color_discrete_map=TYPE_COLORS,
+    tab_rankings, tab_relationship, tab_groups, tab_table = st.tabs(
+        ["Rankings", "Relación", "Por género y territorio", "Títulos mejor evaluados"]
     )
-    update_figure(figure, "Calificación promedio (0–10)", "Popularidad (índice TMDB)")
-    st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
 
-    genre = split_column(catalog, "genres", GENRE_LABELS)
-    scored = genre.merge(
-        catalog[["_content_row", "popularity", "vote_average"]],
-        on="_content_row",
-        how="left",
-        validate="many_to_one",
-    )
-    genre_metrics = (
-        scored.groupby("etiqueta", as_index=False)
-        .agg(
-            Títulos=("_content_row", "nunique"),
-            **{
-                "Popularidad promedio": ("popularity", "mean"),
-                "Calificación promedio": ("vote_average", "mean"),
+    with tab_rankings:
+        top_popular = catalog.nlargest(10, "popularity").sort_values("popularity")
+        top_popular = top_popular.assign(Tipo=top_popular["type_label"])
+        left, right = st.columns(2)
+        with left:
+            figure = px.bar(
+                top_popular, x="popularity", y="title", color="Tipo", orientation="h",
+                title="10 títulos con mayor popularidad",
+                labels={"popularity": "Índice TMDB", "title": "Título"},
+                color_discrete_map=TYPE_COLORS,
+            )
+            update_figure(figure, "Popularidad (índice TMDB)", "")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+        with right:
+            most_voted = catalog.nlargest(10, "vote_count").sort_values("vote_count")
+            figure = px.bar(
+                most_voted, x="vote_count", y="title", color="type_label", orientation="h",
+                title="10 títulos con más votos externos",
+                labels={"vote_count": "Cantidad de votos", "title": "Título", "type_label": "Tipo"},
+                color_discrete_map=TYPE_COLORS,
+            )
+            update_figure(figure, "Votos externos", "")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+
+    with tab_relationship:
+        valid_votes = catalog[catalog["vote_count"].fillna(0) > 0]
+        popularity_values = catalog["popularity"].dropna()
+        if not popularity_values.empty:
+            median_popularity = float(popularity_values.median())
+            quantiles = popularity_values.quantile([0.25, 0.75, 0.90, 0.95])
+            metric_cols = st.columns(5)
+            metric_values = [
+                ("Mediana", format_decimal(median_popularity, 1)),
+                ("Q1", format_decimal(quantiles.loc[0.25], 1)),
+                ("Q3", format_decimal(quantiles.loc[0.75], 1)),
+                ("P90", format_decimal(quantiles.loc[0.90], 1)),
+                ("P95", format_decimal(quantiles.loc[0.95], 1)),
+            ]
+            for column, (label, value) in zip(metric_cols, metric_values):
+                column.metric(label, value)
+            histogram = px.histogram(
+                popularity_values.rename("Popularidad").to_frame(),
+                x="Popularidad",
+                nbins=40,
+                title="Distribución del índice de popularidad",
+                labels={"Popularidad": "Índice TMDB"},
+                color_discrete_sequence=["#188C9E"],
+            )
+            update_figure(histogram, "Índice TMDB", "Cantidad de títulos")
+            st.plotly_chart(histogram, width="stretch", config=PLOT_CONFIG)
+        figure = px.scatter(
+            valid_votes,
+            x="vote_average",
+            y="popularity",
+            size="vote_count",
+            color="type_label",
+            hover_name="title",
+            opacity=0.68,
+            title="Relación entre calificación, popularidad y votos",
+            labels={
+                "vote_average": "Calificación promedio (0–10)",
+                "popularity": "Popularidad TMDB",
+                "vote_count": "Votos externos",
+                "type_label": "Tipo de contenido",
             },
+            color_discrete_map=TYPE_COLORS,
         )
-        .query("Títulos >= @MIN_GROUP_SIZE")
-        .nlargest(12, "Popularidad promedio")
-        .sort_values("Popularidad promedio")
-    )
-    figure = px.bar(
-        genre_metrics, x="Popularidad promedio", y="etiqueta", orientation="h",
-        color="Calificación promedio", title="Popularidad y calificación promedio por género",
-        labels={"etiqueta": "Género"},
-        color_continuous_scale=["#56B4E9", "#E69F00"],
-    )
-    update_figure(figure, "Popularidad promedio (TMDB)", "")
-    st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    st.caption(f"Para comparar grupos, se muestran categorías con al menos {MIN_GROUP_SIZE} títulos.")
+        update_figure(figure, "Calificación promedio (0–10)", "Popularidad (índice TMDB)")
+        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
 
-    st.markdown("#### Popularidad y valoración por territorio e idioma")
-    for column_name, source_column, label_map, dimension in [
-        ("País", "country", COUNTRY_LABELS, "país"),
-        ("Idioma", "language", LANGUAGE_LABELS, "idioma"),
-    ]:
-        expanded = split_column(catalog, source_column, label_map).merge(
+    with tab_groups:
+        genre = split_column(catalog, "genres", GENRE_LABELS)
+        scored = genre.merge(
             catalog[["_content_row", "popularity", "vote_average"]],
             on="_content_row",
             how="left",
             validate="many_to_one",
         )
-        dimension_metrics = (
-            expanded.groupby("etiqueta", as_index=False)
+        genre_metrics = (
+            scored.groupby("etiqueta", as_index=False)
             .agg(
                 Títulos=("_content_row", "nunique"),
                 **{
@@ -680,64 +807,99 @@ def render_popularity(catalog: pd.DataFrame) -> None:
                 },
             )
             .query("Títulos >= @MIN_GROUP_SIZE")
+            .nlargest(12, "Popularidad promedio")
+            .sort_values("Popularidad promedio")
         )
-        if dimension_metrics.empty:
-            st.info(
-                f"No hay grupos de {dimension} con al menos "
-                f"{MIN_GROUP_SIZE} títulos en la selección."
-            )
-            continue
-        popularity_figure = px.bar(
-            dimension_metrics.nlargest(12, "Popularidad promedio").sort_values(
-                "Popularidad promedio"
-            ),
-            x="Popularidad promedio",
-            y="etiqueta",
-            orientation="h",
-            title=f"Índice de popularidad promedio por {dimension}",
-            labels={"etiqueta": column_name},
-            color_discrete_sequence=["#188C9E"],
+        figure = px.bar(
+            genre_metrics, x="Popularidad promedio", y="etiqueta", orientation="h",
+            color="Calificación promedio", title="Popularidad y calificación promedio por género",
+            labels={"etiqueta": "Género"},
+            color_continuous_scale=["#56B4E9", "#E69F00"],
         )
-        update_figure(popularity_figure, "Índice TMDB promedio", "")
-        st.plotly_chart(
-            popularity_figure, width="stretch", config=PLOT_CONFIG
-        )
-        if source_column == "country":
-            rating_figure = px.bar(
-                dimension_metrics.nlargest(12, "Calificación promedio").sort_values(
-                    "Calificación promedio"
-                ),
-                x="Calificación promedio",
-                y="etiqueta",
-                orientation="h",
-                title="Calificación promedio por país",
-                labels={"etiqueta": "País"},
-                color_discrete_sequence=["#8A63C7"],
-            )
-            update_figure(rating_figure, "Calificación promedio (0–10)", "")
-            st.plotly_chart(rating_figure, width="stretch", config=PLOT_CONFIG)
-    st.caption(
-        f"Solo se muestran grupos con al menos {MIN_GROUP_SIZE} títulos. "
-        "Un título con varios países se cuenta en cada país informado."
-    )
+        update_figure(figure, "Popularidad promedio (TMDB)", "")
+        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
 
-    st.markdown("#### Títulos mejor evaluados")
-    st.warning(
-        "El ranking ordena el promedio informado, sin corregir por cantidad de votos. "
-        "Interprételo junto con el volumen de votos; una calificación basada en pocas "
-        "evaluaciones tiene mayor incertidumbre."
-    )
-    best_rated = catalog.nlargest(10, "vote_average")[
-        ["title", "type_label", "vote_average", "vote_count"]
-    ].rename(
-        columns={
-            "title": "Título",
-            "type_label": "Tipo",
-            "vote_average": "Calificación promedio",
-            "vote_count": "Cantidad de votos",
-        }
-    )
-    st.dataframe(best_rated, hide_index=True, width="stretch")
+        territory_tab, language_tab = st.tabs(["País", "Idioma"])
+        for territory, source_column, label_map in [
+            (territory_tab, "country", COUNTRY_LABELS),
+            (language_tab, "language", LANGUAGE_LABELS),
+        ]:
+            with territory:
+                expanded = split_column(catalog, source_column, label_map).merge(
+                    catalog[["_content_row", "popularity", "vote_average"]],
+                    on="_content_row",
+                    how="left",
+                    validate="many_to_one",
+                )
+                dimension_metrics = (
+                    expanded.groupby("etiqueta", as_index=False)
+                    .agg(
+                        Títulos=("_content_row", "nunique"),
+                        **{
+                            "Popularidad promedio": ("popularity", "mean"),
+                            "Calificación promedio": ("vote_average", "mean"),
+                        },
+                    )
+                    .query("Títulos >= @MIN_GROUP_SIZE")
+                )
+                if dimension_metrics.empty:
+                    st.info(f"No hay grupos con al menos {MIN_GROUP_SIZE} títulos.")
+                else:
+                    popularity_figure = px.bar(
+                        dimension_metrics.nlargest(12, "Popularidad promedio").sort_values(
+                            "Popularidad promedio"
+                        ),
+                        x="Popularidad promedio",
+                        y="etiqueta",
+                        orientation="h",
+                        title="Índice de popularidad promedio",
+                        color_discrete_sequence=["#188C9E"],
+                    )
+                    update_figure(popularity_figure, "Índice TMDB promedio", "")
+                    st.plotly_chart(popularity_figure, width="stretch", config=PLOT_CONFIG)
+
+    with tab_table:
+        st.warning(
+            "El ranking ponderado reduce el efecto de votos muy bajos, pero sigue siendo "
+            "una comparación descriptiva de metadatos externos."
+        )
+        ranked = catalog[
+            catalog["vote_average"].notna() & catalog["vote_count"].fillna(0).ge(0)
+        ].copy()
+        max_votes = int(ranked["vote_count"].fillna(0).max()) if not ranked.empty else 0
+        min_votes = st.slider(
+            "Votos mínimos para el ranking ponderado",
+            min_value=0,
+            max_value=max(0, max_votes),
+            value=20 if max_votes >= 20 else 0,
+            step=10,
+            key="popularity_min_votes",
+        )
+        ranked = ranked.loc[ranked["vote_count"].fillna(0) >= min_votes].copy()
+        if ranked.empty:
+            st.info("No hay títulos que cumplan el mínimo de votos seleccionado.")
+        else:
+            global_mean = ranked["vote_average"].mean()
+            minimum_votes = max(20.0, float(ranked["vote_count"].median()))
+            ranked["Calificación ponderada"] = (
+                ranked["vote_count"].fillna(0) / (
+                    ranked["vote_count"].fillna(0) + minimum_votes
+                ) * ranked["vote_average"]
+                + minimum_votes / (
+                    ranked["vote_count"].fillna(0) + minimum_votes
+                ) * global_mean
+            )
+            best_rated = ranked.nlargest(10, "Calificación ponderada")[
+                ["title", "type_label", "Calificación ponderada", "vote_average", "vote_count"]
+            ].rename(
+            columns={
+                "title": "Título",
+                "type_label": "Tipo",
+                "vote_average": "Calificación informada",
+                "vote_count": "Cantidad de votos",
+            }
+        )
+            st.dataframe(best_rated, hide_index=True, width="stretch")
 
 
 def render_finance(catalog: pd.DataFrame) -> None:
@@ -755,83 +917,87 @@ def render_finance(catalog: pd.DataFrame) -> None:
         return
 
     financial["roi_aproximado"] = financial["revenue"] / financial["budget"]
-    kpis = st.columns(4)
+    kpis = st.container(horizontal=True)
     values = [
         ("Películas evaluables", format_count(len(financial))),
         ("Presupuesto promedio", format_source_amount(financial["budget"].mean())),
         ("Presupuesto total", format_source_amount(financial["budget"].sum())),
         ("Ingresos totales", format_source_amount(financial["revenue"].sum())),
     ]
-    for column, (label, value) in zip(kpis, values):
-        column.metric(label, value)
+    for label, value in values:
+        kpis.metric(label, value, border=True)
     weighted_roi = financial["revenue"].sum() / financial["budget"].sum()
     st.metric(
         "ROI aproximado agregado (ingresos / presupuesto)",
         f"{format_decimal(weighted_roi, 2)}×",
     )
 
-    left, right = st.columns(2)
-    with left:
-        figure = px.scatter(
-            financial, x="budget", y="revenue", color="vote_average",
-            size="vote_count", hover_name="title", log_x=True, log_y=True,
-            title="Presupuesto e ingresos (escala logarítmica)",
-            labels={
-                "budget": "Presupuesto (moneda según fuente)",
-                "revenue": "Ingresos (moneda según fuente)",
-                "vote_average": "Calificación promedio",
-                "vote_count": "Votos externos",
-            },
-            color_continuous_scale=["#56B4E9", "#E69F00"],
-        )
-        update_figure(figure, "Presupuesto (escala logarítmica)", "Ingresos (escala logarítmica)")
-        st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-    with right:
-        top_revenue = financial.nlargest(10, "revenue").sort_values("revenue")
+    tab_distribution, tab_rankings, tab_table = st.tabs(
+        ["Presupuesto e ingresos", "Rankings financieros", "Menor presupuesto"]
+    )
+    with tab_distribution:
+        left, right = st.columns(2)
+        with left:
+            figure = px.scatter(
+                financial, x="budget", y="revenue", color="vote_average",
+                size="vote_count", hover_name="title", log_x=True, log_y=True,
+                title="Presupuesto e ingresos (escala logarítmica)",
+                labels={
+                    "budget": "Presupuesto (moneda según fuente)",
+                    "revenue": "Ingresos (moneda según fuente)",
+                    "vote_average": "Calificación promedio",
+                    "vote_count": "Votos externos",
+                },
+                color_continuous_scale=["#56B4E9", "#E69F00"],
+            )
+            update_figure(figure, "Presupuesto (escala logarítmica)", "Ingresos (escala logarítmica)")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+        with right:
+            top_revenue = financial.nlargest(10, "revenue").sort_values("revenue")
+            figure = px.bar(
+                top_revenue, x="revenue", y="title", orientation="h",
+                title="10 películas con mayores ingresos",
+                labels={"revenue": "Ingresos (moneda según fuente)", "title": "Título"},
+                color_discrete_sequence=["#188C9E"],
+            )
+            update_figure(figure, "Ingresos reportados", "")
+            st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+    with tab_rankings:
+        top_roi = financial.nlargest(10, "roi_aproximado").sort_values("roi_aproximado")
         figure = px.bar(
-            top_revenue, x="revenue", y="title", orientation="h",
-            title="10 películas con mayores ingresos",
-            labels={"revenue": "Ingresos (moneda según fuente)", "title": "Título"},
-            color_discrete_sequence=["#188C9E"],
+            top_roi, x="roi_aproximado", y="title", orientation="h",
+            title="10 películas con mayor ROI aproximado",
+            labels={"roi_aproximado": "Ingresos / presupuesto", "title": "Título"},
+            color_discrete_sequence=["#8A63C7"],
         )
-        update_figure(figure, "Ingresos reportados", "")
+        update_figure(figure, "ROI aproximado (veces)", "")
         st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-
-    top_roi = financial.nlargest(10, "roi_aproximado").sort_values("roi_aproximado")
-    figure = px.bar(
-        top_roi, x="roi_aproximado", y="title", orientation="h",
-        title="10 películas con mayor ROI aproximado",
-        labels={"roi_aproximado": "Ingresos / presupuesto", "title": "Título"},
-        color_discrete_sequence=["#8A63C7"],
-    )
-    update_figure(figure, "ROI aproximado (veces)", "")
-    st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
-
-    budget_cutoff = financial["budget"].quantile(0.25)
-    low_budget = financial.loc[financial["budget"] <= budget_cutoff].nlargest(10, "revenue")
-    st.markdown("#### Mayores ingresos entre las películas de menor presupuesto")
-    st.caption(
-        f"“Menor presupuesto” se define aquí como el cuartil inferior del grupo "
-        f"evaluable (budget ≤ {format_source_amount(budget_cutoff)}); es un criterio "
-        "descriptivo de este análisis, no una categoría definida por el caso."
-    )
-    st.dataframe(
-        low_budget[["title", "budget", "revenue", "roi_aproximado"]].rename(
-            columns={
-                "title": "Título",
-                "budget": "Presupuesto",
-                "revenue": "Ingresos",
-                "roi_aproximado": "ROI aproximado",
-            }
-        ),
-        hide_index=True,
-        width="stretch",
-    )
-    st.warning(
-        "Revenue / Budget no es rentabilidad contable: no incorpora costos de "
-        "distribución, marketing ni calendario de flujos. Los presupuestos e ingresos "
-        "son valores según fuente; extremos y magnitudes requieren validación."
-    )
+    with tab_table:
+        budget_cutoff = financial["budget"].quantile(0.25)
+        low_budget = financial.loc[financial["budget"] <= budget_cutoff].nlargest(10, "revenue")
+        st.markdown("#### Mayores ingresos entre las películas de menor presupuesto")
+        st.caption(
+            f"“Menor presupuesto” se define aquí como el cuartil inferior del grupo "
+            f"evaluable (budget ≤ {format_source_amount(budget_cutoff)}); es un criterio "
+            "descriptivo de este análisis, no una categoría definida por el caso."
+        )
+        st.dataframe(
+            low_budget[["title", "budget", "revenue", "roi_aproximado"]].rename(
+                columns={
+                    "title": "Título",
+                    "budget": "Presupuesto",
+                    "revenue": "Ingresos",
+                    "roi_aproximado": "ROI aproximado",
+                }
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        st.warning(
+            "Revenue / Budget no es rentabilidad contable: no incorpora costos de "
+            "distribución, marketing ni calendario de flujos. Los presupuestos e ingresos "
+            "son valores según fuente; extremos y magnitudes requieren validación."
+        )
 
 
 def render_business_context() -> None:
@@ -1342,31 +1508,23 @@ def main() -> None:
         st.stop()
 
     with st.sidebar:
-        st.title("Navegación")
-        page = st.radio(
-            "Ir a sección",
-            [
-                "Resumen ejecutivo",
-                "Catálogo y tendencias",
-                "Popularidad y valoración",
-                "Finanzas de películas",
-                "Contexto y reglas",
-                "Fuentes y calidad",
-                "Investigación complementaria (en construcción)",
-            ],
-            label_visibility="collapsed",
-        )
-        st.divider()
+        st.caption("StreamView Analytics · versión final")
+        st.caption("Usa las solapas superiores para cambiar de apartado")
 
-    if page == "Investigación complementaria (en construcción)":
-        render_external_research()
-        return
-
-    selected = apply_filters(catalog)
+    selected, comparison = apply_filters(catalog)
     if selected.empty:
         st.warning("No hay títulos que coincidan con los filtros seleccionados.")
         st.info("Amplía el rango de años o calificación, o cambia género y tipo de contenido.")
         st.stop()
+    with st.sidebar:
+        st.header("Exportar selección")
+        st.download_button(
+            "Descargar catálogo filtrado (CSV)",
+            data=selected.to_csv(index=False).encode("utf-8-sig"),
+            file_name="streamview_catalogo_filtrado.csv",
+            mime="text/csv",
+            key="download_catalog_filtered",
+        )
 
     valid_years = selected["release_year"].dropna()
     year_range = (
@@ -1374,25 +1532,63 @@ def main() -> None:
         if not valid_years.empty
         else "sin años informados"
     )
-    st.caption(
-        f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} títulos"
-        f" · Años de estreno: {year_range}"
-    )
-    render_kpis(selected)
-    st.divider()
 
-    if page == "Resumen ejecutivo":
-        render_overview(selected)
-    elif page == "Catálogo y tendencias":
+    tab_overview, tab_catalog, tab_popularity, tab_finance, tab_context, tab_quality, tab_research = st.tabs(
+        [
+            "Resumen",
+            "Catálogo",
+            "Popularidad",
+            "Finanzas",
+            "Contexto",
+            "Calidad",
+            "Investigación",
+        ]
+    )
+
+    with tab_overview:
+        st.caption(
+            f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} títulos"
+            f" · Años de estreno: {year_range}"
+        )
+        render_kpis(selected)
+        st.divider()
+        render_overview(selected, comparison)
+
+    with tab_catalog:
+        st.caption(
+            f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} títulos"
+            f" · Años de estreno: {year_range}"
+        )
+        render_kpis(selected)
+        st.divider()
         render_catalog_analysis(selected)
-    elif page == "Popularidad y valoración":
+
+    with tab_popularity:
+        st.caption(
+            f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} títulos"
+            f" · Años de estreno: {year_range}"
+        )
+        render_kpis(selected)
+        st.divider()
         render_popularity(selected)
-    elif page == "Finanzas de películas":
+
+    with tab_finance:
+        st.caption(
+            f"Selección: {format_count(len(selected))} de {format_count(len(catalog))} títulos"
+            f" · Años de estreno: {year_range}"
+        )
+        render_kpis(selected)
+        st.divider()
         render_finance(selected)
-    elif page == "Contexto y reglas":
+
+    with tab_context:
         render_business_context()
-    else:
+
+    with tab_quality:
         render_quality(catalog)
+
+    with tab_research:
+        render_external_research()
 
 
 if __name__ == "__main__":

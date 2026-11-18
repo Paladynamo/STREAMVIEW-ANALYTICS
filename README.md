@@ -166,7 +166,7 @@ transformación de los CSV actuales.
 ## Requisitos
 
 - Git
-- Python 3.11 o superior
+- Python 3.14 (versión validada para este proyecto)
 - `pip`
 
 Las dependencias directas y sus versiones están fijadas en `requirements.txt`.
@@ -182,7 +182,7 @@ git clone https://github.com/Paladynamo/STREAMVIEW-ANALYTICS.git
 cd STREAMVIEW-ANALYTICS
 
 # Crear una sola vez
-py -m venv .venv
+py -3.14 -m venv .venv
 
 # Activar
 .\.venv\Scripts\Activate.ps1
@@ -208,7 +208,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```bash
 git clone https://github.com/Paladynamo/STREAMVIEW-ANALYTICS.git
 cd STREAMVIEW-ANALYTICS
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
@@ -220,6 +220,8 @@ Streamlit informa la dirección local, normalmente
 
 ## Secciones del dashboard
 
+- **Navegación principal:** solapas superiores para resumir, explorar catálogo,
+  popularidad, finanzas, contexto, calidad e investigación.
 - **Resumen ejecutivo:** tres KPI principales, composición y tendencias del
   catálogo, más una narrativa de decisiones y sus límites.
 - **Catálogo y tendencias:** oferta por género, país e idioma; estrenos,
@@ -246,6 +248,26 @@ Los filtros compartidos incluyen tipo de contenido, año de estreno, género y
 calificación. La interfaz está en español y respeta el tema claro u oscuro
 configurado en Streamlit. Los nombres originales de variables y títulos se
 conservan cuando es necesario para la trazabilidad de la fuente.
+
+## Mejora funcional de la entrega final
+
+La entrega final incorpora las siguientes oportunidades implementadas:
+
+- **Restablecimiento inmediato de filtros:** los filtros compartidos pueden volver a sus valores iniciales desde la barra lateral.
+- **Comparación entre periodos:** la selección actual puede compararse con un segundo rango de años conservando tipo, género y valoración.
+- **Ranking ponderado:** el ranking de títulos mejor evaluados incorpora una calificación ajustada por votos y permite definir un mínimo configurable.
+- **Distribución de popularidad:** se muestran mediana, cuartiles, percentiles y un histograma interactivo además de rankings y dispersión.
+- **Descarga de la selección:** el catálogo principal permite descargar el subconjunto filtrado en formato CSV.
+- **Llave técnica de trazabilidad:** cada registro conserva archivo de origen, fila original y una llave compuesta interna.
+- **Conclusiones dentro de la narrativa:** el resumen incluye una lectura ejecutiva que separa qué ocurre y qué decisión debe validarse.
+- **Cobertura visible:** los KPI muestran cobertura de calificación, popularidad y país.
+- **Calidad junto a las recomendaciones:** la vista de calidad identifica faltantes, claves, fechas uniformes y preguntas pendientes con su estado de cobertura.
+
+## Entregables finales
+
+- [Informe ejecutivo en Markdown](docs/Informe_Ejecutivo_StreamView.md)
+- [Informe ejecutivo en PDF](deliverables/Informe_Ejecutivo_StreamView.pdf)
+- [Presentación para defensa](deliverables/Presentacion_Defensa_StreamView.pptx)
 
 ## Estructura
 
