@@ -52,9 +52,9 @@ Se comparó el ZIP de datos entregado con los CSV del repositorio mediante
 SHA-256: ambos archivos son idénticos byte por byte. El ZIP no agrega una fuente
 de actividad de clientes ni datos que habiliten métricas de uso.
 
-## Investigación complementaria (en construcción)
+## Investigación complementaria
 
-La pestaña **Investigación complementaria (en construcción)** usa únicamente
+La sección **Investigación complementaria** usa únicamente
 los dos CSV adicionales preparados para este análisis y guardados en
 `data/research_inputs/`:
 
@@ -218,6 +218,12 @@ streamlit run dashboard/app.py
 Streamlit informa la dirección local, normalmente
 `http://localhost:8501`. Para detener el servidor, presione `Ctrl+C`.
 
+## Navegación y experiencia de uso
+
+La navegación principal utiliza un selector horizontal de módulos para reducir el desplazamiento vertical y mantener visible el contexto de la sección activa. Los filtros comunes permanecen en la barra lateral para los seis módulos principales; la investigación complementaria conserva filtros independientes. La interfaz aplica un ancho de contenido amplio, tarjetas compactas y gráficos Plotly responsivos.
+
+En **Popularidad y valoración** se añadió un ranking ajustado por volumen de votos. La fórmula combina el promedio del título con el promedio global y pondera el resultado según la cantidad de votos, usando como peso previo la mediana de votos de la selección. El mínimo de votos es configurable. Se trata de una herramienta exploratoria, no de una métrica oficial.
+
 ## Secciones del dashboard
 
 - **Resumen ejecutivo:** tres KPI principales, composición y tendencias del
@@ -232,9 +238,9 @@ Streamlit informa la dirección local, normalmente
   reglas aplicadas.
 - **Fuentes y calidad:** faltantes, identificadores repetidos, controles,
   cobertura de preguntas del caso y datos que faltan para responderlas.
-- **Investigación complementaria (en construcción):** análisis separado de los
-  dos CSV estimados, filtros por tipo/año/género/valoración y descarga de las
-  fuentes completas o de la selección. No interviene en el análisis principal.
+- **Investigación complementaria:** módulo independiente con vistas de proxy comparativo,
+  distribuciones de duración estimada, exploración financiera complementaria y trazabilidad.
+  Incluye filtros propios y descargas; no interviene en los KPI oficiales.
 
 ## Documentación de visualizaciones
 
